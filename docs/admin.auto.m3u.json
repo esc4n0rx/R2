@@ -1,0 +1,276 @@
+{
+  "description": "Sistema automatizado de conteúdo M3U — gerencia fontes de playlist, importação inicial e auto-sync diário.",
+  "base_url": "/admin/contents/auto-m3u",
+  "auth": "Bearer <admin_token> (cabeçalho Authorization ou cookie)",
+
+  "endpoints": [
+
+    {
+      "id": "discover_categories",
+      "summary": "Inspecionar categorias de uma URL M3U",
+      "description": "Faz download e parse da URL M3U e retorna todas as categorias/subcategorias encontradas com contagens. Não salva nada no banco — use para selecionar quais categorias ativar antes de criar a fonte.",
+      "method": "POST",
+      "path": "/discover",
+      "request_body": {
+        "url": "http://meuiptv.com/lista.m3u",
+        "language": "pt-BR"
+      },
+      "response_200": {
+        "total_categories": 3,
+        "categories": [
+          {
+            "category": "FILMES",
+            "total": 4200,
+            "subcategories": [
+              { "name": "AÇÃO", "count": 980 },
+              { "name": "DRAMA", "count": 760 },
+              { "name": null, "count": 2460 }
+            ]
+          },
+          {
+            "category": "SÉRIES",
+            "total": 1800,
+            "subcategories": [
+              { "name": "LANÇAMENTOS", "count": 320 },
+              { "name": null, "count": 1480 }
+            ]
+          },
+          {
+            "category": "INFANTIL",
+            "total": 210,
+            "subcategories": [
+              { "name": null, "count": 210 }
+            ]
+          }
+        ]
+      },
+      "notes": "subcategory: null significa itens sem subcategoria definida no M3U."
+    },
+
+    {
+      "id": "create_source",
+      "summary": "Criar fonte de playlist",
+      "description": "Salva a URL com os filtros selecionados. Não importa nada ainda — use POST /sources/:id/sync para disparar a primeira importação.",
+      "method": "POST",
+      "path": "/sources",
+      "request_body": {
+        "name": "IPTV Principal",
+        "url": "http://meuiptv.com/lista.m3u",
+        "active_filters": [
+          { "category": "FILMES", "subcategory": null },
+          { "category": "SÉRIES", "subcategory": "LANÇAMENTOS" }
+        ],
+        "language": "pt-BR",
+        "tmdb_batch_size": 200,
+        "tmdb_concurrency": 20,
+        "import_concurrency": 10,
+        "auto_sync_enabled": true,
+        "sync_hour": 3
+      },
+      "field_notes": {
+        "active_filters": "Array de filtros. subcategory: null importa toda a categoria independente de subcategoria.",
+        "sync_hour": "Hora UTC (0-23) em que o auto-sync diário dispara.",
+        "auto_sync_enabled": "false = só importa manualmente. true = sincroniza diariamente."
+      },
+      "response_201": {
+        "id": "uuid-da-fonte",
+        "name": "IPTV Principal",
+        "url": "http://meuiptv.com/lista.m3u",
+        "active_filters": [
+          { "category": "FILMES", "subcategory": null },
+          { "category": "SÉRIES", "subcategory": "LANÇAMENTOS" }
+        ],
+        "language": "pt-BR",
+        "tmdb_batch_size": 200,
+        "tmdb_concurrency": 20,
+        "import_concurrency": 10,
+        "auto_sync_enabled": true,
+        "sync_hour": 3,
+        "status": "idle",
+        "last_sync_at": null,
+        "last_sync_summary": null,
+        "last_sync_error": null,
+        "created_by": "admin-uuid",
+        "created_at": "2025-05-11T12:00:00Z",
+        "updated_at": "2025-05-11T12:00:00Z"
+      }
+    },
+
+    {
+      "id": "list_sources",
+      "summary": "Listar fontes de playlist",
+      "method": "GET",
+      "path": "/sources",
+      "response_200": {
+        "total": 2,
+        "playlists": [
+          {
+            "id": "uuid-1",
+            "name": "IPTV Principal",
+            "url": "http://meuiptv.com/lista.m3u",
+            "active_filters": [{ "category": "FILMES", "subcategory": null }],
+            "language": "pt-BR",
+            "tmdb_batch_size": 200,
+            "tmdb_concurrency": 20,
+            "import_concurrency": 10,
+            "auto_sync_enabled": true,
+            "sync_hour": 3,
+            "status": "idle",
+            "last_sync_at": "2025-05-11T03:02:14Z",
+            "last_sync_summary": {
+              "total": 4120,
+              "created": 38,
+              "updated_url": 4,
+              "skipped": 4078,
+              "failed": 0,
+              "not_found": 21,
+              "filters_processed": 1
+            },
+            "last_sync_error": null,
+            "created_by": "admin-uuid",
+            "created_at": "2025-05-10T10:00:00Z",
+            "updated_at": "2025-05-11T03:02:14Z"
+          }
+        ]
+      }
+    },
+
+    {
+      "id": "get_source",
+      "summary": "Detalhe de uma fonte",
+      "method": "GET",
+      "path": "/sources/:id",
+      "response_200": "Mesmo objeto de create_source response_201"
+    },
+
+    {
+      "id": "update_source",
+      "summary": "Atualizar configurações da fonte",
+      "description": "Todos os campos são opcionais. A URL não pode ser alterada — delete e recrie se precisar trocar.",
+      "method": "PATCH",
+      "path": "/sources/:id",
+      "request_body": {
+        "auto_sync_enabled": true,
+        "sync_hour": 4,
+        "active_filters": [
+          { "category": "FILMES", "subcategory": null },
+          { "category": "SÉRIES", "subcategory": null }
+        ]
+      },
+      "response_200": "Objeto AutoPlaylist atualizado"
+    },
+
+    {
+      "id": "delete_source",
+      "summary": "Deletar fonte",
+      "description": "Retorna 409 se houver um sync em andamento para esta fonte.",
+      "method": "DELETE",
+      "path": "/sources/:id",
+      "response_204": null
+    },
+
+    {
+      "id": "trigger_sync",
+      "summary": "Disparar sync manual",
+      "description": "Inicia imediatamente a importação completa de todos os filtros ativos. O sync corre em background — use /sync/status e /sync/logs para acompanhar. Retorna 202 mesmo se o sync já estiver rodando (nesse caso started: false).",
+      "method": "POST",
+      "path": "/sources/:id/sync",
+      "request_body": null,
+      "response_202_started": {
+        "started": true
+      },
+      "response_202_already_running": {
+        "started": false,
+        "reason": "sync_already_running"
+      }
+    },
+
+    {
+      "id": "sync_status",
+      "summary": "Status do sync atual",
+      "description": "Combina estado em memória (sync ativo) com o último resultado persistido no banco.",
+      "method": "GET",
+      "path": "/sources/:id/sync/status",
+      "response_200_active": {
+        "playlist_id": "uuid-da-fonte",
+        "is_active": true,
+        "progress": {
+          "parsed": 6000,
+          "resolved": 3200,
+          "imported": 2100,
+          "current_filter": "FILMES"
+        },
+        "db_status": "syncing",
+        "last_sync_at": "2025-05-10T03:00:00Z",
+        "last_sync_summary": {
+          "total": 4120,
+          "created": 38,
+          "updated_url": 4,
+          "skipped": 4078,
+          "failed": 0,
+          "not_found": 21,
+          "filters_processed": 1
+        },
+        "last_sync_error": null
+      },
+      "response_200_idle": {
+        "playlist_id": "uuid-da-fonte",
+        "is_active": false,
+        "progress": null,
+        "db_status": "idle",
+        "last_sync_at": "2025-05-11T03:02:14Z",
+        "last_sync_summary": {
+          "total": 4120,
+          "created": 38,
+          "updated_url": 4,
+          "skipped": 4078,
+          "failed": 0,
+          "not_found": 21,
+          "filters_processed": 1
+        },
+        "last_sync_error": null
+      }
+    },
+
+    {
+      "id": "sync_logs",
+      "summary": "Logs do sync em andamento",
+      "description": "Retorna logs do sync ativo em memória (vazio após o sync terminar). Paginação com cursor.",
+      "method": "GET",
+      "path": "/sources/:id/sync/logs",
+      "query_params": {
+        "cursor": "0 (índice de início, default 0)",
+        "limit": "100 (máx 500)"
+      },
+      "response_200": {
+        "logs": [
+          { "ts": "2025-05-11T03:00:01Z", "level": "info", "message": "Sync iniciado — 2 filtro(s) ativos" },
+          { "ts": "2025-05-11T03:00:05Z", "level": "info", "message": "M3U baixado e parseado: 6000 itens" },
+          { "ts": "2025-05-11T03:00:05Z", "level": "info", "message": "Filtro \"FILMES\": 4200 itens selecionados" },
+          { "ts": "2025-05-11T03:01:10Z", "level": "info", "message": "Filtro \"FILMES\" concluido: 4200 filmes, 0 ep series, 21 nao encontrados" },
+          { "ts": "2025-05-11T03:01:10Z", "level": "info", "message": "Filtro \"SÉRIES | LANÇAMENTOS\": 320 itens selecionados" },
+          { "ts": "2025-05-11T03:02:12Z", "level": "info", "message": "Sync concluido — created=38 updated_url=4 skipped=4078 failed=0 not_found=21" }
+        ],
+        "next_cursor": 6,
+        "has_more": false
+      }
+    }
+  ],
+
+  "auto_sync_behavior": {
+    "description": "O scheduler roda a cada 10 minutos. Em cada ciclo busca playlists onde auto_sync_enabled=true, sync_hour=hora_UTC_atual, status!=syncing e last_sync_at < agora-22h (ou null). A janela de 22 horas garante um sync por dia com tolerância para drift.",
+    "startup_behavior": "Na inicialização do servidor o scheduler redefine playlists travadas em status='syncing' para 'idle' (proteção contra crash) e faz uma verificação imediata para capturar syncs atrasados durante o downtime.",
+    "sync_content_logic": "O auto-sync baixa a lista M3U, filtra pelos active_filters configurados, resolve cada item via TMDB, e importa: novos filmes/séries são criados, novos episódios/temporadas são adicionados, URLs de streaming atualizadas se mudaram, conteúdo já existente com mesma URL é ignorado (skipped)."
+  },
+
+  "workflow_frontend": [
+    "1. POST /discover { url } → mostrar tabela de categorias/subcategorias com checkboxes",
+    "2. Usuário marca as categorias desejadas e configura auto_sync_enabled + sync_hour",
+    "3. POST /sources com os filtros selecionados → fonte salva",
+    "4. POST /sources/:id/sync para importar imediatamente (opcional)",
+    "5. Polling em GET /sources/:id/sync/status a cada 5s para mostrar progresso",
+    "6. GET /sources/:id/sync/logs para exibir log detalhado",
+    "7. Após terminar: GET /sources/:id para ver last_sync_summary",
+    "8. Fonte fica ativa com auto-sync conforme configurado"
+  ]
+}

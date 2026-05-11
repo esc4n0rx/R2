@@ -1,0 +1,328 @@
+{
+  "module": "admin.contents.movies",
+  "base_path": "/admin/contents/movies",
+  "description": "Gerenciamento de filmes via TMDB. Rotas exclusivas para administradores.",
+  "notes": [
+    "Exige autenticação (Bearer token ou cookie) + usuário na tabela admin_users.",
+    "Fluxo recomendado: buscar pelo nome via GET /search, copiar o tmdb_id do resultado desejado, depois POST / com esse ID.",
+    "Ao adicionar um filme, todos os metadados são buscados automaticamente do TMDB.",
+    "status draft = invisível para usuários comuns. published = visível via RLS.",
+    "O endpoint /sync re-busca todos os metadados do TMDB sem alterar o status atual.",
+    "Para ingestão em massa via lista M3U (200k+ itens), usar o fluxo descrito em admin.m3u.json: parse → resolve → import."
+  ],
+  "auth_required": true,
+  "admin_required": true,
+  "request_headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "Content-Type": "application/json"
+  },
+  "schemas": {
+    "movie": {
+      "id": "uuid",
+      "tmdb_id": "integer",
+      "imdb_id": "string | null",
+      "title": "string",
+      "original_title": "string",
+      "overview": "string",
+      "tagline": "string | null",
+      "status_tmdb": "Released | In Production | Post Production | Planned | Rumored | Canceled",
+      "release_date": "YYYY-MM-DD | null",
+      "runtime_minutes": "integer | null",
+      "adult": "boolean",
+      "popularity": "number",
+      "vote_average": "number (0–10)",
+      "vote_count": "integer",
+      "poster_url": "string | null",
+      "backdrop_url": "string | null",
+      "genres": [{ "tmdb_id": "integer", "name": "string" }],
+      "cast_members": [
+        {
+          "tmdb_person_id": "integer",
+          "name": "string",
+          "character": "string",
+          "profile_url": "string | null",
+          "order": "integer"
+        }
+      ],
+      "crew": [
+        {
+          "tmdb_person_id": "integer",
+          "name": "string",
+          "job": "Director | Producer | Screenplay | Writer | Original Music Composer",
+          "department": "string",
+          "profile_url": "string | null"
+        }
+      ],
+      "trailers": [
+        {
+          "key": "YouTube video key",
+          "name": "string",
+          "site": "YouTube",
+          "type": "Trailer | Teaser",
+          "official": "boolean",
+          "published_at": "ISO8601"
+        }
+      ],
+      "production_countries": ["string"],
+      "spoken_languages": ["string"],
+      "streaming_url": "string | null (URL de origem: https, http, .mp4, .mkv, .m3u8, etc.)",
+      "status": "draft | published",
+      "created_by": "uuid (admin user_id)",
+      "created_at": "ISO8601",
+      "updated_at": "ISO8601"
+    },
+    "movie_search_result": {
+      "tmdb_id": "integer",
+      "title": "string",
+      "original_title": "string",
+      "overview": "string",
+      "release_date": "YYYY-MM-DD | null",
+      "popularity": "number",
+      "vote_average": "number (0–10)",
+      "poster_url": "string | null"
+    }
+  },
+  "routes": [
+    {
+      "id": "search_movies",
+      "method": "GET",
+      "path": "/admin/contents/movies/search",
+      "description": "Busca filmes no TMDB pelo nome. Use para descobrir o tmdb_id antes de adicionar um filme.",
+      "query_params": {
+        "q": "nome do filme (obrigatório)",
+        "language": "idioma dos resultados (default: pt-BR)",
+        "page": "página dos resultados (default: 1)"
+      },
+      "request": {},
+      "example_url": "/admin/contents/movies/search?q=Clube+da+Luta",
+      "responses": {
+        "200": {
+          "results": [
+            {
+              "tmdb_id": 550,
+              "title": "Clube da Luta",
+              "original_title": "Fight Club",
+              "overview": "Um homem deprimido que sofre de insônia...",
+              "release_date": "1999-10-15",
+              "popularity": 93.432,
+              "vote_average": 8.44,
+              "poster_url": "https://image.tmdb.org/t/p/w342/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg"
+            }
+          ],
+          "total": 1
+        },
+        "400": { "error": "Query parameter \"q\" is required" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" }
+      }
+    },
+    {
+      "id": "list_movies",
+      "method": "GET",
+      "path": "/admin/contents/movies",
+      "description": "Lista todos os filmes cadastrados (draft e published), com paginação.",
+      "query_params": {
+        "page": "número da página (default: 1)",
+        "limit": "itens por página (default: 20, max: 100)"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "movies": [
+            {
+              "id": "m1b2c3d4-0000-0000-0000-000000000001",
+              "tmdb_id": 550,
+              "imdb_id": "tt0137523",
+              "title": "Clube da Luta",
+              "original_title": "Fight Club",
+              "overview": "Um homem deprimido que sofre de insônia...",
+              "tagline": "Mischief. Mayhem. Soap.",
+              "status_tmdb": "Released",
+              "release_date": "1999-10-15",
+              "runtime_minutes": 139,
+              "adult": false,
+              "popularity": 93.432,
+              "vote_average": 8.44,
+              "vote_count": 28000,
+              "poster_url": "https://image.tmdb.org/t/p/original/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+              "backdrop_url": "https://image.tmdb.org/t/p/original/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
+              "genres": [
+                { "tmdb_id": 18, "name": "Drama" },
+                { "tmdb_id": 53, "name": "Thriller" }
+              ],
+              "cast_members": [
+                {
+                  "tmdb_person_id": 819,
+                  "name": "Edward Norton",
+                  "character": "The Narrator",
+                  "profile_url": "https://image.tmdb.org/t/p/w185/eIkFHkqe3kZVKCUSBwZMRwEpCPR.jpg",
+                  "order": 0
+                },
+                {
+                  "tmdb_person_id": 287,
+                  "name": "Brad Pitt",
+                  "character": "Tyler Durden",
+                  "profile_url": "https://image.tmdb.org/t/p/w185/cckcYc2v0yh1tc9QjRelptcOBko.jpg",
+                  "order": 1
+                }
+              ],
+              "crew": [
+                {
+                  "tmdb_person_id": 7467,
+                  "name": "David Fincher",
+                  "job": "Director",
+                  "department": "Directing",
+                  "profile_url": "https://image.tmdb.org/t/p/w185/tpEczFclQZeKAiCeKZZ0adRvtfz.jpg"
+                }
+              ],
+              "trailers": [
+                {
+                  "key": "SUXWAEX2jlg",
+                  "name": "Trailer Oficial",
+                  "site": "YouTube",
+                  "type": "Trailer",
+                  "official": true,
+                  "published_at": "2014-09-29T19:46:12.000Z"
+                }
+              ],
+              "production_countries": ["Germany", "United States of America"],
+              "spoken_languages": ["English"],
+              "status": "published",
+              "created_by": "a1b2c3d4-0000-0000-0000-000000000001",
+              "created_at": "2026-05-05T10:00:00.000Z",
+              "updated_at": "2026-05-05T10:00:00.000Z"
+            }
+          ],
+          "total": 1
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" }
+      }
+    },
+    {
+      "id": "get_movie",
+      "method": "GET",
+      "path": "/admin/contents/movies/:id",
+      "description": "Retorna os detalhes completos de um filme pelo ID interno (UUID).",
+      "path_params": {
+        "id": "UUID interno do filme"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "movie": { "$ref": "schemas.movie" }
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Movie not found" }
+      }
+    },
+    {
+      "id": "add_movie",
+      "method": "POST",
+      "path": "/admin/contents/movies",
+      "description": "Busca os metadados do TMDB pelo tmdb_id e persiste o filme no banco. Use GET /search antes para descobrir o tmdb_id pelo nome.",
+      "request": {
+        "body": {
+          "tmdb_id": 550,
+          "language": "pt-BR",
+          "status": "draft"
+        },
+        "body_minimal": {
+          "tmdb_id": 550
+        },
+        "validations": {
+          "tmdb_id": "obrigatório, inteiro positivo — obter via GET /search",
+          "language": "opcional, default: pt-BR (formato: xx-XX)",
+          "status": "opcional, draft | published, default: draft"
+        }
+      },
+      "responses": {
+        "201": {
+          "movie": { "$ref": "schemas.movie" }
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "409": { "error": "Movie already exists" }
+      }
+    },
+    {
+      "id": "update_movie",
+      "method": "PATCH",
+      "path": "/admin/contents/movies/:id",
+      "description": "Atualiza campos editáveis do filme (status, título, overview e streaming_url). Não re-busca o TMDB.",
+      "path_params": {
+        "id": "UUID interno do filme"
+      },
+      "request": {
+        "body": {
+          "status": "published",
+          "title": "Clube da Luta (título corrigido)",
+          "overview": "Overview corrigido manualmente...",
+          "streaming_url": "https://cdn.example.com/filmes/clube-da-luta.mp4"
+        },
+        "body_minimal": {
+          "status": "published"
+        },
+        "streaming_url_examples": {
+          "mp4_https": "https://cdn.example.com/filmes/clube-da-luta.mp4",
+          "mkv_http": "http://storage.internal/movies/fight-club.mkv",
+          "hls": "https://cdn.example.com/filmes/clube-da-luta/index.m3u8",
+          "remove": null
+        },
+        "validations": {
+          "status": "opcional, draft | published",
+          "title": "opcional, string 1–200 caracteres",
+          "overview": "opcional, string até 2000 caracteres",
+          "streaming_url": "opcional, URL válida ou null para remover"
+        }
+      },
+      "responses": {
+        "200": {
+          "movie": { "$ref": "schemas.movie" }
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Movie not found" }
+      }
+    },
+    {
+      "id": "sync_movie",
+      "method": "POST",
+      "path": "/admin/contents/movies/:id/sync",
+      "description": "Re-busca todos os metadados do TMDB e atualiza o registro. Status e ID interno são preservados.",
+      "path_params": {
+        "id": "UUID interno do filme"
+      },
+      "query_params": {
+        "language": "idioma da busca (default: pt-BR)"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "movie": { "$ref": "schemas.movie" }
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Movie not found" }
+      }
+    },
+    {
+      "id": "delete_movie",
+      "method": "DELETE",
+      "path": "/admin/contents/movies/:id",
+      "description": "Remove o filme do banco permanentemente.",
+      "path_params": {
+        "id": "UUID interno do filme"
+      },
+      "request": {},
+      "responses": {
+        "204": null,
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node_modules\\\\.bin\\\\tsc --noEmit)",
+      "Read(//mnt/c/Users/paulo.oliveira/Documents/**)",
+      "Bash(./node_modules/.bin/tsc --noEmit)"
+    ]
+  }
+}

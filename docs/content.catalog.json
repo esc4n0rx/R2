@@ -1,0 +1,227 @@
+{
+  "module": "content.catalog",
+  "base_path": "/contents",
+  "description": "Modulo publico autenticado para descoberta de conteudo: busca por nome, novidades, hero, detalhes, similares e recomendacoes por generos assistidos.",
+  "auth_required": true,
+  "admin_required": false,
+  "notes": [
+    "Todas as rotas retornam somente conteudo com status = 'published'.",
+    "Quando type = 'series' em listagens, cada serie aparece uma unica vez (sem expandir temporadas/episodios).",
+    "A rota de detalhes de serie expande temporadas e episodios.",
+    "Recomendacoes usam historico completo salvo no modulo stream.",
+    "Se o historico for insuficiente, a API retorna uma mensagem padrao com fallback de novidades populares."
+  ],
+  "schemas": {
+    "content_card": {
+      "id": "uuid",
+      "type": "movie | series",
+      "title": "string (movie.title ou series.name)",
+      "overview": "string",
+      "poster_url": "string | null",
+      "backdrop_url": "string | null",
+      "genres": ["Action", "Drama"],
+      "popularity": 123.45,
+      "created_at": "ISO8601"
+    },
+    "movie_details": {
+      "id": "uuid",
+      "type": "movie",
+      "title": "string",
+      "original_title": "string",
+      "overview": "string",
+      "tagline": "string | null",
+      "release_date": "YYYY-MM-DD | null",
+      "runtime_minutes": 139,
+      "genres": ["Drama"],
+      "cast_members": [],
+      "crew": [],
+      "trailers": [],
+      "streaming_url": "string | null"
+    },
+    "series_details": {
+      "id": "uuid",
+      "type": "series",
+      "name": "string",
+      "original_name": "string",
+      "overview": "string",
+      "tagline": "string | null",
+      "first_air_date": "YYYY-MM-DD | null",
+      "last_air_date": "YYYY-MM-DD | null",
+      "number_of_seasons": 5,
+      "number_of_episodes": 62,
+      "genres": ["Crime", "Drama"],
+      "seasons": [
+        {
+          "id": "uuid",
+          "season_number": 1,
+          "name": "Temporada 1",
+          "episodes": [
+            {
+              "id": "uuid",
+              "episode_number": 1,
+              "name": "Piloto",
+              "runtime_minutes": 58,
+              "streaming_url": "https://cdn.example.com/series/x/s01e01.m3u8"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "routes": [
+    {
+      "id": "list_genres",
+      "method": "GET",
+      "path": "/discover/genres",
+      "description": "Retorna todos os generos unicos presentes nas tabelas movies e series (status published), ordenados de A a Z. Resultado cacheado por 10 minutos.",
+      "query_params": {},
+      "responses": {
+        "200": {
+          "genres": ["Action", "Animation", "Crime", "Drama", "Thriller"],
+          "cached": false
+        },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "search_contents",
+      "method": "GET",
+      "path": "/contents/search",
+      "description": "Busca conteudos por nome/titulo.",
+      "query_params": {
+        "q": "string obrigatoria (min 2 chars)",
+        "type": "movie | series | all (default all)",
+        "limit": "integer 1-50 (default 20)",
+        "offset": "integer >= 0 (default 0)"
+      },
+      "responses": {
+        "200": {
+          "items": [
+            { "$ref": "schemas.content_card" }
+          ],
+          "total": 120
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "hero_news",
+      "method": "GET",
+      "path": "/contents/hero",
+      "description": "Retorna itens para o hero combinando created_at mais recente e maior popularity, respeitando o tipo da pagina.",
+      "query_params": {
+        "type": "movie | series (obrigatorio)",
+        "limit": "integer 1-20 (default 10)"
+      },
+      "responses": {
+        "200": {
+          "items": [
+            { "$ref": "schemas.content_card" }
+          ]
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "news_by_type",
+      "method": "GET",
+      "path": "/contents/new",
+      "description": "Retorna novidades por data de criacao (created_at), respeitando o tipo.",
+      "query_params": {
+        "type": "movie | series (obrigatorio)",
+        "limit": "integer 1-50 (default 20)",
+        "offset": "integer >= 0 (default 0)"
+      },
+      "responses": {
+        "200": {
+          "items": [
+            { "$ref": "schemas.content_card" }
+          ]
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "recommended_by_profile",
+      "method": "GET",
+      "path": "/contents/recommended",
+      "description": "Recomendados por perfil com base nos generos mais assistidos no historico completo do stream.",
+      "query_params": {
+        "profile_id": "uuid obrigatorio",
+        "type": "movie | series | all (default all)",
+        "limit": "integer 1-50 (default 20)"
+      },
+      "responses": {
+        "200": {
+          "has_enough_data": true,
+          "message": "Recomendacoes geradas com base no seu historico",
+          "items": [
+            { "$ref": "schemas.content_card" }
+          ]
+        },
+        "200_fallback": {
+          "has_enough_data": false,
+          "message": "Ainda nao ha dados suficientes para recomendacoes personalizadas. Continue assistindo para melhorar as sugestoes.",
+          "items": []
+        },
+        "400": { "error": "Validation error" },
+        "403": { "error": "Profile does not belong to this account" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "filter_by_genre",
+      "method": "GET",
+      "path": "/contents/genre/:genre",
+      "description": "Filtra conteudo por genero (ex.: Action, Animation), respeitando o tipo selecionado.",
+      "path_params": {
+        "genre": "string obrigatoria"
+      },
+      "query_params": {
+        "type": "movie | series | all (default all)",
+        "limit": "integer 1-50 (default 20)",
+        "offset": "integer >= 0 (default 0)"
+      },
+      "responses": {
+        "200": {
+          "items": [
+            { "$ref": "schemas.content_card" }
+          ]
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "content_details",
+      "method": "GET",
+      "path": "/contents/:type/:id",
+      "description": "Retorna detalhes completos para modal, incluindo lista de similares por intersecao de genres.",
+      "path_params": {
+        "type": "movie | series",
+        "id": "uuid"
+      },
+      "query_params": {
+        "similar_limit": "integer 1-30 (default 12)"
+      },
+      "responses": {
+        "200": {
+          "details": {
+            "one_of": [
+              { "$ref": "schemas.movie_details" },
+              { "$ref": "schemas.series_details" }
+            ]
+          },
+          "similar": [
+            { "$ref": "schemas.content_card" }
+          ]
+        },
+        "404": { "error": "Content not found" },
+        "401": { "error": "Unauthorized" }
+      }
+    }
+  ]
+}

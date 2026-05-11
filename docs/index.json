@@ -1,0 +1,105 @@
+{
+  "project": "Ryvo API",
+  "version": "1.0.0",
+  "base_url": "http://localhost:3000",
+  "auth_strategy": {
+    "type": "Bearer token + httpOnly cookies",
+    "header": "Authorization: Bearer <accessToken>",
+    "cookie": "access_token (httpOnly, automático via browser)",
+    "token_lifetime": "~1 hora",
+    "refresh_path": "POST /auth/refresh"
+  },
+  "modules": [
+    {
+      "name": "auth",
+      "base_path": "/auth",
+      "doc": "auth.json",
+      "public": true,
+      "routes_summary": [
+        "POST /auth/register",
+        "POST /auth/login",
+        "POST /auth/refresh",
+        "POST /auth/logout",
+        "GET  /auth/me"
+      ]
+    },
+    {
+      "name": "profiles",
+      "base_path": "/profiles",
+      "doc": "profiles.json",
+      "public": false,
+      "requires_auth": true,
+      "routes_summary": [
+        "GET    /profiles",
+        "GET    /profiles/:id",
+        "POST   /profiles",
+        "PATCH  /profiles/:id",
+        "DELETE /profiles/:id"
+      ]
+    },
+    {
+      "name": "admin.movies",
+      "base_path": "/admin/contents/movies",
+      "doc": "admin.movies.json",
+      "public": false,
+      "requires_auth": true,
+      "requires_admin": true,
+      "routes_summary": [
+        "GET    /admin/contents/movies",
+        "GET    /admin/contents/movies/:id",
+        "POST   /admin/contents/movies",
+        "PATCH  /admin/contents/movies/:id",
+        "POST   /admin/contents/movies/:id/sync",
+        "DELETE /admin/contents/movies/:id"
+      ]
+    },
+    {
+      "name": "admin.series",
+      "base_path": "/admin/contents/series",
+      "doc": "admin.series.json",
+      "public": false,
+      "requires_auth": true,
+      "requires_admin": true,
+      "routes_summary": [
+        "GET    /admin/contents/series",
+        "GET    /admin/contents/series/:id",
+        "POST   /admin/contents/series",
+        "PATCH  /admin/contents/series/:id",
+        "POST   /admin/contents/series/:id/sync",
+        "POST   /admin/contents/series/:id/seasons/:seasonNumber/sync",
+        "DELETE /admin/contents/series/:id"
+      ]
+    }
+  ],
+  "error_format": {
+    "description": "Todos os erros seguem o mesmo formato.",
+    "shape": { "error": "string com mensagem legível" },
+    "common_status_codes": {
+      "400": "Validation error — payload inválido",
+      "401": "Unauthorized — token ausente ou expirado",
+      "403": "Forbidden — usuário não é admin",
+      "404": "Not found — recurso não existe",
+      "409": "Conflict — recurso já existe (tmdb_id duplicado, email já cadastrado)",
+      "422": "Unprocessable — regra de negócio violada (limite de perfis, último perfil, etc.)",
+      "500": "Internal server error"
+    }
+  },
+  "setup": {
+    "sql_apply_order": [
+      "supabase/migrations/001_profiles.sql",
+      "supabase/migrations/002_admin.sql",
+      "supabase/migrations/003_contents.sql",
+      "supabase/rls/profiles.rls.sql",
+      "supabase/rls/contents.rls.sql",
+      "supabase/scripts/set_admin.sql  ← edite o UUID antes de executar"
+    ],
+    "env_vars": [
+      "SUPABASE_URL",
+      "SUPABASE_ANON_KEY",
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "TMDB_ACCESS_TOKEN",
+      "COOKIE_SECRET",
+      "PORT (optional, default 3000)"
+    ]
+  }
+}

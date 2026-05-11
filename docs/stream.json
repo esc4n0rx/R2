@@ -1,0 +1,258 @@
+{
+  "module": "stream",
+  "base_path": "/stream",
+  "description": "Proxy seguro de streaming de vídeo. Suporta MP4, MKV e HLS/M3U8 (HTTP ou HTTPS de origem). Todos os streams são retransmitidos em HTTPS pelo servidor. O progresso de visualização é armazenado por perfil para suportar 'Continue assistindo'.",
+  "notes": [
+    "Exige autenticação (Bearer token ou cookie).",
+    "O conteúdo precisa ter status 'published' e streaming_url configurada pelo admin.",
+    "Para filmes: PATCH /admin/contents/movies/:id com { streaming_url }.",
+    "Para episódios: PATCH /admin/contents/series/episodes/:episodeId com { streaming_url }.",
+    "HLS: o servidor reescreve o manifest M3U8 para que todos os segmentos passem pelo endpoint /stream/hls/segment com token HMAC assinado, impedindo proxy de URLs arbitrárias.",
+    "Vídeo direto (MP4/MKV): suporta Range requests (seek/scrub) retornando 206 Partial Content.",
+    "O campo completed é setado automaticamente quando position_seconds >= 90% de duration_seconds.",
+    "STREAM_SECRET no .env é obrigatório para assinar tokens HLS."
+  ],
+  "auth_required": true,
+  "admin_required": false,
+  "request_headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "Range": "bytes=0- (opcional, para seek em MP4/MKV)"
+  },
+  "schemas": {
+    "watch_history_event": {
+      "id": "uuid",
+      "profile_id": "uuid",
+      "content_type": "movie | episode",
+      "content_id": "uuid",
+      "event_type": "play | pause | seek | stop | complete",
+      "position_seconds": "integer >= 0",
+      "duration_seconds": "integer | null",
+      "occurred_at": "ISO8601 (momento real do evento no player)",
+      "created_at": "ISO8601"
+    },
+    "watch_progress": {
+      "id": "uuid",
+      "profile_id": "uuid",
+      "content_type": "movie | episode",
+      "content_id": "uuid (ID interno do filme ou episódio)",
+      "position_seconds": "integer (posição atual em segundos)",
+      "duration_seconds": "integer | null (duração total em segundos)",
+      "completed": "boolean (auto: position >= 90% de duration)",
+      "created_at": "ISO8601",
+      "updated_at": "ISO8601"
+    }
+  },
+  "admin_setup": {
+    "description": "Antes de stremar, o admin deve configurar a streaming_url no conteúdo.",
+    "set_movie_url": {
+      "method": "PATCH",
+      "path": "/admin/contents/movies/:id",
+      "body": {
+        "streaming_url": "https://cdn.example.com/filmes/clube-da-luta.mp4"
+      },
+      "notes": "Aceita https, http, .mp4, .mkv, .m3u8 — qualquer protocolo suportado pelo servidor de origem."
+    },
+    "set_episode_url": {
+      "method": "PATCH",
+      "path": "/admin/contents/series/episodes/:episodeId",
+      "body": {
+        "streaming_url": "https://cdn.example.com/series/breaking-bad/s01e01/index.m3u8"
+      }
+    }
+  },
+  "routes": [
+    {
+      "id": "stream_movie",
+      "method": "GET",
+      "path": "/stream/movie/:id",
+      "description": "Inicia o stream de um filme. Redireciona e retransmite o conteúdo da streaming_url pelo servidor. Suporta Range para seek.",
+      "path_params": {
+        "id": "UUID interno do filme"
+      },
+      "request_headers": {
+        "Range": "bytes=0- (opcional)"
+      },
+      "responses": {
+        "200": "Stream de vídeo (Content-Type: video/mp4 ou application/vnd.apple.mpegurl para HLS)",
+        "206": "Partial Content (resposta a Range request)",
+        "403": { "error": "Content not available (status != published)" },
+        "404": { "error": "Movie not found | No streaming URL configured for this movie" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "stream_episode",
+      "method": "GET",
+      "path": "/stream/episode/:id",
+      "description": "Inicia o stream de um episódio. O episódio só é acessível se a série pai estiver publicada.",
+      "path_params": {
+        "id": "UUID interno do episódio"
+      },
+      "request_headers": {
+        "Range": "bytes=0- (opcional)"
+      },
+      "responses": {
+        "200": "Stream de vídeo",
+        "206": "Partial Content",
+        "403": { "error": "Content not available" },
+        "404": { "error": "Episode not found | No streaming URL configured for this episode" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "hls_segment",
+      "method": "GET",
+      "path": "/stream/hls/segment",
+      "description": "Proxy de segmentos HLS. O token é gerado automaticamente ao reescrever o manifest M3U8 — não chame esta rota diretamente. O token é HMAC-SHA256 assinado e não pode ser forjado.",
+      "query_params": {
+        "token": "string — <hex-hmac>.<base64url-url> gerado pelo servidor"
+      },
+      "responses": {
+        "200": "Segmento de vídeo (video/mp2t) ou sub-manifest M3U8",
+        "206": "Partial Content",
+        "403": { "error": "Invalid segment token" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "save_progress",
+      "method": "POST",
+      "path": "/stream/progress",
+      "description": "Salva ou atualiza o progresso de visualização de um perfil. Deve ser chamado periodicamente durante a reprodução (ex: a cada 10–30s) e ao pausar/fechar.",
+      "request": {
+        "body": {
+          "profile_id": "b1c2d3e4-0000-0000-0000-000000000001",
+          "content_type": "movie",
+          "content_id": "m1b2c3d4-0000-0000-0000-000000000001",
+          "position_seconds": 1234,
+          "duration_seconds": 8340
+        },
+        "validations": {
+          "profile_id": "obrigatório, UUID — deve pertencer ao usuário autenticado",
+          "content_type": "obrigatório, 'movie' | 'episode'",
+          "content_id": "obrigatório, UUID do filme ou episódio",
+          "position_seconds": "obrigatório, integer >= 0",
+          "duration_seconds": "opcional, integer > 0 — usado para calcular completed"
+        }
+      },
+      "responses": {
+        "200": {
+          "progress": {
+            "id": "p1b2c3d4-0000-0000-0000-000000000001",
+            "profile_id": "b1c2d3e4-0000-0000-0000-000000000001",
+            "content_type": "movie",
+            "content_id": "m1b2c3d4-0000-0000-0000-000000000001",
+            "position_seconds": 1234,
+            "duration_seconds": 8340,
+            "completed": false,
+            "created_at": "2026-05-05T10:00:00.000Z",
+            "updated_at": "2026-05-05T10:15:00.000Z"
+          }
+        },
+        "400": { "error": "Validation error" },
+        "403": { "error": "Profile does not belong to this account" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "list_progress",
+      "method": "GET",
+      "path": "/stream/progress",
+      "description": "Lista todo o progresso de visualização de um perfil, ordenado do mais recente. Ideal para montar a seção 'Continue assistindo'.",
+      "query_params": {
+        "profile_id": "UUID do perfil"
+      },
+      "responses": {
+        "200": {
+          "progress": [
+            {
+              "id": "p1b2c3d4-0000-0000-0000-000000000001",
+              "profile_id": "b1c2d3e4-0000-0000-0000-000000000001",
+              "content_type": "movie",
+              "content_id": "m1b2c3d4-0000-0000-0000-000000000001",
+              "position_seconds": 1234,
+              "duration_seconds": 8340,
+              "completed": false,
+              "created_at": "2026-05-05T10:00:00.000Z",
+              "updated_at": "2026-05-05T10:15:00.000Z"
+            }
+          ]
+        },
+        "400": { "error": "Validation error" },
+        "403": { "error": "Profile does not belong to this account" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "get_progress_item",
+      "method": "GET",
+      "path": "/stream/progress/:contentType/:contentId",
+      "description": "Retorna o progresso de um conteúdo específico para um perfil. Retorna null se não houver registro (conteúdo nunca assistido).",
+      "path_params": {
+        "contentType": "movie | episode",
+        "contentId": "UUID interno do conteúdo"
+      },
+      "query_params": {
+        "profile_id": "UUID do perfil"
+      },
+      "responses": {
+        "200": {
+          "progress": {
+            "$ref": "schemas.watch_progress",
+            "or": null
+          }
+        },
+        "400": { "error": "Validation error" },
+        "403": { "error": "Profile does not belong to this account" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "save_watch_history_event",
+      "method": "POST",
+      "path": "/stream/history/events",
+      "description": "Salva evento bruto de reproducao para historico completo (base para recomendacoes por genero).",
+      "request": {
+        "body": {
+          "profile_id": "b1c2d3e4-0000-0000-0000-000000000001",
+          "content_type": "movie",
+          "content_id": "m1b2c3d4-0000-0000-0000-000000000001",
+          "event_type": "play",
+          "position_seconds": 0,
+          "duration_seconds": 8340,
+          "occurred_at": "2026-05-05T10:00:00.000Z"
+        }
+      },
+      "responses": {
+        "201": {
+          "event": { "$ref": "schemas.watch_history_event" }
+        },
+        "400": { "error": "Validation error" },
+        "403": { "error": "Profile does not belong to this account" },
+        "401": { "error": "Unauthorized" }
+      }
+    },
+    {
+      "id": "list_watch_history",
+      "method": "GET",
+      "path": "/stream/history",
+      "description": "Lista historico completo de eventos por perfil, do mais recente para o mais antigo.",
+      "query_params": {
+        "profile_id": "UUID do perfil",
+        "content_type": "movie | episode (opcional)",
+        "limit": "integer 1-200 (default 50)",
+        "offset": "integer >= 0 (default 0)"
+      },
+      "responses": {
+        "200": {
+          "events": [
+            { "$ref": "schemas.watch_history_event" }
+          ]
+        },
+        "400": { "error": "Validation error" },
+        "403": { "error": "Profile does not belong to this account" },
+        "401": { "error": "Unauthorized" }
+      }
+    }
+  ]
+}

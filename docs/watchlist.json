@@ -1,0 +1,127 @@
+{
+  "module": "Watchlist",
+  "description": "Per-profile list of movies and series a user wants to watch. Each profile has its own independent watchlist — profiles within the same account cannot see each other's lists.",
+  "base_path": "/profiles/:profileId/watchlist",
+  "auth": "Bearer token or access_token cookie required on all routes",
+  "routes": [
+    {
+      "id": "list-watchlist",
+      "method": "GET",
+      "path": "/profiles/:profileId/watchlist",
+      "description": "Returns all items in the profile's watchlist, newest first.",
+      "params": {
+        "profileId": "UUID of the profile (must belong to the authenticated user)"
+      },
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <access_token>"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "watchlist": [
+            {
+              "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+              "profile_id": "11111111-2222-3333-4444-555555555555",
+              "content_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+              "content_type": "movie",
+              "added_at": "2024-06-01T10:00:00.000Z"
+            },
+            {
+              "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+              "profile_id": "11111111-2222-3333-4444-555555555555",
+              "content_id": "ffffffff-0000-1111-2222-333333333333",
+              "content_type": "series",
+              "added_at": "2024-05-28T08:30:00.000Z"
+            }
+          ]
+        }
+      },
+      "errors": [
+        { "status": 400, "error": "Invalid profile ID" },
+        { "status": 401, "error": "Unauthorized" },
+        { "status": 404, "error": "Profile not found" }
+      ]
+    },
+    {
+      "id": "add-to-watchlist",
+      "method": "POST",
+      "path": "/profiles/:profileId/watchlist",
+      "description": "Adds a movie or series to the profile's watchlist.",
+      "params": {
+        "profileId": "UUID of the profile (must belong to the authenticated user)"
+      },
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <access_token>",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "content_type": "movie"
+        }
+      },
+      "fields": {
+        "content_id": "UUID of the movie or series in the contents table (required)",
+        "content_type": "Either 'movie' or 'series' (required)"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "item": {
+            "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "profile_id": "11111111-2222-3333-4444-555555555555",
+            "content_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "content_type": "movie",
+            "added_at": "2024-06-01T10:00:00.000Z"
+          }
+        }
+      },
+      "errors": [
+        { "status": 400, "error": "Invalid profile ID" },
+        { "status": 400, "error": "Invalid content ID" },
+        { "status": 400, "error": "Invalid content_type — must be 'movie' or 'series'" },
+        { "status": 401, "error": "Unauthorized" },
+        { "status": 404, "error": "Profile not found" },
+        { "status": 409, "error": "Content already in watchlist" }
+      ]
+    },
+    {
+      "id": "remove-from-watchlist",
+      "method": "DELETE",
+      "path": "/profiles/:profileId/watchlist/:contentId",
+      "description": "Removes a specific content item from the profile's watchlist.",
+      "params": {
+        "profileId": "UUID of the profile (must belong to the authenticated user)",
+        "contentId": "UUID of the content to remove"
+      },
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <access_token>"
+        }
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      },
+      "errors": [
+        { "status": 400, "error": "Invalid ID" },
+        { "status": 401, "error": "Unauthorized" },
+        { "status": 404, "error": "Profile not found" }
+      ]
+    }
+  ],
+  "database": {
+    "table": "watchlist",
+    "columns": {
+      "id": "uuid, PK, auto-generated",
+      "profile_id": "uuid, FK → profiles(id) ON DELETE CASCADE",
+      "content_id": "uuid, references movies or series table",
+      "content_type": "text, CHECK IN ('movie', 'series')",
+      "added_at": "timestamptz, default now()"
+    },
+    "unique_constraint": "(profile_id, content_id)",
+    "rls": "Users can only access watchlist rows whose profile belongs to them (auth.uid() check via profiles table)"
+  }
+}

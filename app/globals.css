@@ -1,0 +1,158 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Ryvo / Zapier-inspired color system — Light */
+  --background: #fffefb;
+  --foreground: #201515;
+  --card: #fffefb;
+  --card-foreground: #201515;
+  --popover: #fffefb;
+  --popover-foreground: #201515;
+  --primary: #ff4f00;
+  --primary-foreground: #fffefb;
+  --secondary: #eceae3;
+  --secondary-foreground: #201515;
+  --muted: #eceae3;
+  --muted-foreground: #939084;
+  --accent: #ff4f00;
+  --accent-foreground: #fffefb;
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: #c5c0b1;
+  --input: #c5c0b1;
+  --ring: #ff4f00;
+  --radius: 0.5rem;
+
+  /* Ryvo custom tokens */
+  --ryvo-cream: #fffefb;
+  --ryvo-black: #201515;
+  --ryvo-charcoal: #36342e;
+  --ryvo-muted: #939084;
+  --ryvo-sand: #c5c0b1;
+  --ryvo-light-sand: #eceae3;
+  --ryvo-orange: #ff4f00;
+  --ryvo-off-white: #fffdf9;
+  --ryvo-surface: #f5f4f0;
+  --ryvo-hover: #eceae3;
+  --ryvo-overlay: rgba(32, 21, 21, 0.5);
+  --ryvo-footer-bg: #201515;
+  --ryvo-footer-text: #fffefb;
+  --ryvo-footer-muted: #7a7067;
+  --ryvo-footer-border: #36342e;
+}
+
+.dark {
+  /* Ryvo — Dark */
+  --background: #121010;
+  --foreground: #f0ede8;
+  --card: #1c1917;
+  --card-foreground: #f0ede8;
+  --popover: #1c1917;
+  --popover-foreground: #f0ede8;
+  --primary: #ff4f00;
+  --primary-foreground: #fffefb;
+  --secondary: #2a2724;
+  --secondary-foreground: #f0ede8;
+  --muted: #2a2724;
+  --muted-foreground: #7a7670;
+  --accent: #ff4f00;
+  --accent-foreground: #fffefb;
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: #302d2a;
+  --input: #302d2a;
+  --ring: #ff4f00;
+
+  /* Ryvo custom tokens — Dark */
+  --ryvo-cream: #121010;
+  --ryvo-black: #f0ede8;
+  --ryvo-charcoal: #c8c4be;
+  --ryvo-muted: #7a7670;
+  --ryvo-sand: #302d2a;
+  --ryvo-light-sand: #2a2724;
+  --ryvo-orange: #ff4f00;
+  --ryvo-off-white: #1c1917;
+  --ryvo-surface: #1c1917;
+  --ryvo-hover: #2a2724;
+  --ryvo-overlay: rgba(0, 0, 0, 0.65);
+  --ryvo-footer-bg: #0a0908;
+  --ryvo-footer-text: #f0ede8;
+  --ryvo-footer-muted: #7a7670;
+  --ryvo-footer-border: #1c1917;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), 'Inter', 'Helvetica', 'Arial', sans-serif;
+  --font-display: var(--font-syne), 'Syne', sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Custom Ryvo theme extensions */
+  --color-ryvo-cream: var(--ryvo-cream);
+  --color-ryvo-black: var(--ryvo-black);
+  --color-ryvo-charcoal: var(--ryvo-charcoal);
+  --color-ryvo-muted: var(--ryvo-muted);
+  --color-ryvo-sand: var(--ryvo-sand);
+  --color-ryvo-light-sand: var(--ryvo-light-sand);
+  --color-ryvo-orange: var(--ryvo-orange);
+  --color-ryvo-off-white: var(--ryvo-off-white);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--muted);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+/* Hide scrollbar for horizontal carousels */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

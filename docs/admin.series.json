@@ -1,0 +1,445 @@
+{
+  "module": "admin.contents.series",
+  "base_path": "/admin/contents/series",
+  "description": "Gerenciamento de séries de TV via TMDB. Inclui temporadas e episódios completos.",
+  "notes": [
+    "Exige autenticação (Bearer token ou cookie) + usuário na tabela admin_users.",
+    "Fluxo recomendado: buscar pelo nome via GET /search, copiar o tmdb_id do resultado desejado, depois POST / com esse ID.",
+    "Para ingestão em massa via lista M3U (200k+ itens), usar o fluxo descrito em admin.m3u.json: parse → resolve → import.",
+    "Ao adicionar uma série, metadados + temporadas + episódios são buscados em cascata.",
+    "fetch_episodes: false acelera a ingestão inicial (só temporadas, sem episódios).",
+    "GET /:id retorna a série com seasons e episodes aninhados.",
+    "Deletar uma série remove em cascata temporadas e episódios (FK on delete cascade).",
+    "streaming_url é configurada por episódio via PATCH /admin/contents/series/episodes/:episodeId.",
+    "A série precisa ter status 'published' para que os episódios sejam acessíveis em /stream/episode/:id.",
+    "Aceita qualquer URL de vídeo: https, http, .mp4, .mkv, .m3u8 (HLS) — o proxy cuida da retransmissão."
+  ],
+  "auth_required": true,
+  "admin_required": true,
+  "request_headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "Content-Type": "application/json"
+  },
+  "schemas": {
+    "series_search_result": {
+      "tmdb_id": "integer",
+      "name": "string",
+      "original_name": "string",
+      "overview": "string",
+      "first_air_date": "YYYY-MM-DD | null",
+      "popularity": "number",
+      "vote_average": "number (0–10)",
+      "poster_url": "string | null"
+    },
+    "episode": {
+      "id": "uuid",
+      "season_id": "uuid",
+      "tmdb_id": "integer",
+      "episode_number": "integer",
+      "name": "string",
+      "overview": "string",
+      "air_date": "YYYY-MM-DD | null",
+      "runtime_minutes": "integer | null",
+      "still_url": "string | null",
+      "vote_average": "number",
+      "vote_count": "integer",
+      "streaming_url": "string | null (URL de origem: https, http, .mp4, .mkv, .m3u8, etc.)",
+      "created_at": "ISO8601"
+    },
+    "season": {
+      "id": "uuid",
+      "series_id": "uuid",
+      "tmdb_id": "integer",
+      "season_number": "integer",
+      "name": "string",
+      "overview": "string",
+      "air_date": "YYYY-MM-DD | null",
+      "poster_url": "string | null",
+      "episode_count": "integer",
+      "episodes": ["$ref:episode"],
+      "created_at": "ISO8601"
+    },
+    "series": {
+      "id": "uuid",
+      "tmdb_id": "integer",
+      "name": "string",
+      "original_name": "string",
+      "overview": "string",
+      "tagline": "string | null",
+      "status_tmdb": "Returning Series | Ended | Canceled | In Production | Planned | Pilot",
+      "type": "Scripted | Reality | Documentary | News | Talk Show | Miniseries",
+      "first_air_date": "YYYY-MM-DD | null",
+      "last_air_date": "YYYY-MM-DD | null",
+      "number_of_seasons": "integer",
+      "number_of_episodes": "integer",
+      "episode_runtime": ["integer"],
+      "popularity": "number",
+      "vote_average": "number (0–10)",
+      "vote_count": "integer",
+      "poster_url": "string | null",
+      "backdrop_url": "string | null",
+      "genres": [{ "tmdb_id": "integer", "name": "string" }],
+      "networks": ["string"],
+      "created_by_people": ["string"],
+      "cast_members": [
+        {
+          "tmdb_person_id": "integer",
+          "name": "string",
+          "character": "string",
+          "profile_url": "string | null",
+          "order": "integer"
+        }
+      ],
+      "crew": [
+        {
+          "tmdb_person_id": "integer",
+          "name": "string",
+          "job": "string",
+          "department": "string",
+          "profile_url": "string | null"
+        }
+      ],
+      "trailers": [
+        {
+          "key": "YouTube video key",
+          "name": "string",
+          "site": "YouTube",
+          "type": "Trailer | Teaser",
+          "official": "boolean",
+          "published_at": "ISO8601"
+        }
+      ],
+      "production_countries": ["string"],
+      "spoken_languages": ["string"],
+      "status": "draft | published",
+      "created_by": "uuid",
+      "created_at": "ISO8601",
+      "updated_at": "ISO8601",
+      "seasons": ["$ref:season"]
+    }
+  },
+  "routes": [
+    {
+      "id": "search_series",
+      "method": "GET",
+      "path": "/admin/contents/series/search",
+      "description": "Busca séries de TV no TMDB pelo nome. Use para descobrir o tmdb_id antes de adicionar uma série.",
+      "query_params": {
+        "q": "nome da série (obrigatório)",
+        "language": "idioma dos resultados (default: pt-BR)",
+        "page": "página dos resultados (default: 1)"
+      },
+      "request": {},
+      "example_url": "/admin/contents/series/search?q=Breaking+Bad",
+      "responses": {
+        "200": {
+          "results": [
+            {
+              "tmdb_id": 1396,
+              "name": "Breaking Bad",
+              "original_name": "Breaking Bad",
+              "overview": "Um professor de química do ensino médio...",
+              "first_air_date": "2008-01-20",
+              "popularity": 551.48,
+              "vote_average": 8.87,
+              "poster_url": "https://image.tmdb.org/t/p/w342/ggFHVNu6YYI5L9pCfOacjizRGt.jpg"
+            }
+          ],
+          "total": 1
+        },
+        "400": { "error": "Query parameter \"q\" is required" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" }
+      }
+    },
+    {
+      "id": "list_series",
+      "method": "GET",
+      "path": "/admin/contents/series",
+      "description": "Lista todas as séries cadastradas (draft e published) sem temporadas/episódios.",
+      "query_params": {
+        "page": "número da página (default: 1)",
+        "limit": "itens por página (default: 20, max: 100)"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "series": [
+            {
+              "id": "s1b2c3d4-0000-0000-0000-000000000001",
+              "tmdb_id": 1396,
+              "name": "Breaking Bad",
+              "original_name": "Breaking Bad",
+              "overview": "Um professor de química do ensino médio...",
+              "tagline": "Tudo começa com um não.",
+              "status_tmdb": "Ended",
+              "type": "Scripted",
+              "first_air_date": "2008-01-20",
+              "last_air_date": "2013-09-29",
+              "number_of_seasons": 5,
+              "number_of_episodes": 62,
+              "episode_runtime": [47, 48],
+              "popularity": 551.48,
+              "vote_average": 8.87,
+              "vote_count": 13000,
+              "poster_url": "https://image.tmdb.org/t/p/original/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
+              "backdrop_url": "https://image.tmdb.org/t/p/original/tsRy63Mu5cu8etL1X7ZLyf7UP1M.jpg",
+              "genres": [
+                { "tmdb_id": 18, "name": "Drama" },
+                { "tmdb_id": 80, "name": "Crime" }
+              ],
+              "networks": ["AMC"],
+              "created_by_people": ["Vince Gilligan"],
+              "cast_members": [
+                {
+                  "tmdb_person_id": 17419,
+                  "name": "Bryan Cranston",
+                  "character": "Walter White",
+                  "profile_url": "https://image.tmdb.org/t/p/w185/7Jahy5LZX2Fo8fGJltMreAI49hC.jpg",
+                  "order": 0
+                }
+              ],
+              "crew": [],
+              "trailers": [
+                {
+                  "key": "HhesaQXLuRY",
+                  "name": "Trailer Oficial Temporada 5",
+                  "site": "YouTube",
+                  "type": "Trailer",
+                  "official": true,
+                  "published_at": "2012-05-09T00:00:00.000Z"
+                }
+              ],
+              "production_countries": ["United States of America"],
+              "spoken_languages": ["English", "Spanish"],
+              "status": "published",
+              "created_by": "a1b2c3d4-0000-0000-0000-000000000001",
+              "created_at": "2026-05-05T10:00:00.000Z",
+              "updated_at": "2026-05-05T10:00:00.000Z"
+            }
+          ],
+          "total": 1
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" }
+      }
+    },
+    {
+      "id": "get_series",
+      "method": "GET",
+      "path": "/admin/contents/series/:id",
+      "description": "Retorna a série completa com temporadas e episódios aninhados.",
+      "path_params": {
+        "id": "UUID interno da série"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "series": {
+            "id": "s1b2c3d4-0000-0000-0000-000000000001",
+            "name": "Breaking Bad",
+            "seasons": [
+              {
+                "id": "se1b2c3d4-0000-0000-0000-000000000001",
+                "series_id": "s1b2c3d4-0000-0000-0000-000000000001",
+                "tmdb_id": 3572,
+                "season_number": 1,
+                "name": "Temporada 1",
+                "overview": "Walter White, um professor de química...",
+                "air_date": "2008-01-20",
+                "poster_url": "https://image.tmdb.org/t/p/original/poster.jpg",
+                "episode_count": 7,
+                "episodes": [
+                  {
+                    "id": "ep1b2c3d4-0000-0000-0000-000000000001",
+                    "season_id": "se1b2c3d4-0000-0000-0000-000000000001",
+                    "tmdb_id": 62085,
+                    "episode_number": 1,
+                    "name": "Piloto",
+                    "overview": "O professor de química Walter White descobre que tem câncer...",
+                    "air_date": "2008-01-20",
+                    "runtime_minutes": 58,
+                    "still_url": "https://image.tmdb.org/t/p/w300/still.jpg",
+                    "vote_average": 7.7,
+                    "vote_count": 430,
+                    "streaming_url": null,
+                    "created_at": "2026-05-05T10:00:00.000Z"
+                  }
+                ],
+                "created_at": "2026-05-05T10:00:00.000Z"
+              }
+            ]
+          }
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Series not found" }
+      }
+    },
+    {
+      "id": "add_series",
+      "method": "POST",
+      "path": "/admin/contents/series",
+      "description": "Busca série no TMDB e persiste com temporadas e episódios. Use GET /search antes para descobrir o tmdb_id pelo nome. fetch_episodes: false omite episódios para ingestão mais rápida.",
+      "request": {
+        "body": {
+          "tmdb_id": 1396,
+          "language": "pt-BR",
+          "status": "draft",
+          "fetch_episodes": true
+        },
+        "body_minimal": {
+          "tmdb_id": 1396
+        },
+        "validations": {
+          "tmdb_id": "obrigatório, inteiro positivo — obter via GET /search",
+          "language": "opcional, default: pt-BR",
+          "status": "opcional, draft | published, default: draft",
+          "fetch_episodes": "opcional, boolean, default: true"
+        }
+      },
+      "responses": {
+        "201": {
+          "series": { "$ref": "schemas.series" }
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "409": { "error": "Series already exists" }
+      }
+    },
+    {
+      "id": "update_series",
+      "method": "PATCH",
+      "path": "/admin/contents/series/:id",
+      "description": "Atualiza campos editáveis da série. Não re-busca o TMDB.",
+      "path_params": {
+        "id": "UUID interno da série"
+      },
+      "request": {
+        "body": {
+          "status": "published",
+          "name": "Breaking Bad (título corrigido)",
+          "overview": "Overview corrigido manualmente..."
+        },
+        "body_minimal": {
+          "status": "published"
+        }
+      },
+      "responses": {
+        "200": {
+          "series": { "$ref": "schemas.series" }
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Series not found" }
+      }
+    },
+    {
+      "id": "sync_series",
+      "method": "POST",
+      "path": "/admin/contents/series/:id/sync",
+      "description": "Re-busca metadados da série no TMDB. Com fetch_episodes=true, apaga e re-insere todas as temporadas e episódios.",
+      "path_params": {
+        "id": "UUID interno da série"
+      },
+      "query_params": {
+        "language": "idioma da busca (default: pt-BR)",
+        "fetch_episodes": "true para re-sincronizar episódios também (default: false)"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "series": { "$ref": "schemas.series" }
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Series not found" }
+      }
+    },
+    {
+      "id": "sync_season",
+      "method": "POST",
+      "path": "/admin/contents/series/:id/seasons/:seasonNumber/sync",
+      "description": "Re-busca episódios de uma temporada específica no TMDB. Útil quando uma temporada em andamento tem novos episódios.",
+      "path_params": {
+        "id": "UUID interno da série",
+        "seasonNumber": "número da temporada (ex: 1, 2, 0 para especiais)"
+      },
+      "query_params": {
+        "language": "idioma da busca (default: pt-BR)"
+      },
+      "request": {},
+      "responses": {
+        "200": {
+          "season": { "$ref": "schemas.season" }
+        },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Season not found" }
+      }
+    },
+    {
+      "id": "update_episode",
+      "method": "PATCH",
+      "path": "/admin/contents/series/episodes/:episodeId",
+      "description": "Atualiza campos editáveis de um episódio. Atualmente suporta streaming_url para configurar a URL de origem do vídeo.",
+      "path_params": {
+        "episodeId": "UUID interno do episódio"
+      },
+      "request": {
+        "body": {
+          "streaming_url": "https://cdn.example.com/series/breaking-bad/s01e01/index.m3u8"
+        },
+        "streaming_url_examples": {
+          "mp4_https": "https://cdn.example.com/series/bb/s01e01.mp4",
+          "mkv_http": "http://storage.internal/series/bb/s01e01.mkv",
+          "hls": "https://cdn.example.com/series/bb/s01e01/index.m3u8",
+          "remove": null
+        },
+        "validations": {
+          "streaming_url": "opcional, URL válida ou null para remover"
+        }
+      },
+      "responses": {
+        "200": {
+          "episode": {
+            "id": "ep1b2c3d4-0000-0000-0000-000000000001",
+            "season_id": "se1b2c3d4-0000-0000-0000-000000000001",
+            "tmdb_id": 62085,
+            "episode_number": 1,
+            "name": "Piloto",
+            "overview": "O professor de química Walter White descobre que tem câncer...",
+            "air_date": "2008-01-20",
+            "runtime_minutes": 58,
+            "still_url": "https://image.tmdb.org/t/p/w300/still.jpg",
+            "vote_average": 7.7,
+            "vote_count": 430,
+            "streaming_url": "https://cdn.example.com/series/breaking-bad/s01e01/index.m3u8",
+            "created_at": "2026-05-05T10:00:00.000Z"
+          }
+        },
+        "400": { "error": "Validation error" },
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" },
+        "404": { "error": "Episode not found" }
+      }
+    },
+    {
+      "id": "delete_series",
+      "method": "DELETE",
+      "path": "/admin/contents/series/:id",
+      "description": "Remove a série e em cascata todas as temporadas e episódios.",
+      "path_params": {
+        "id": "UUID interno da série"
+      },
+      "request": {},
+      "responses": {
+        "204": null,
+        "401": { "error": "Unauthorized" },
+        "403": { "error": "Forbidden" }
+      }
+    }
+  ]
+}

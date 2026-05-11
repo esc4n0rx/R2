@@ -1,0 +1,569 @@
+{
+  "module": "admin.contents.m3u",
+  "base_path": "/admin/contents/m3u",
+  "full_paths": {
+    "parse": "POST /admin/contents/m3u/parse",
+    "resolve": "POST /admin/contents/m3u/resolve",
+    "import": "POST /admin/contents/m3u/import",
+    "import_background_start": "POST /admin/contents/m3u/import/background/start",
+    "import_background_status": "GET /admin/contents/m3u/import/background/:jobId",
+    "import_background_logs": "GET /admin/contents/m3u/import/background/:jobId/logs",
+    "import_background_cancel": "POST /admin/contents/m3u/import/background/:jobId/cancel"
+  },
+  "description": "Ingestão em massa via lista M3U. Fluxo em 3 etapas: parse (sem TMDB), resolve (TMDB com throttle), import (batch Supabase). Filmes e séries são detectados automaticamente pela estrutura da URL e pelo padrão SxxExx no nome.",
+  "auth_required": true,
+  "admin_required": true,
+  "request_headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "Content-Type": "application/json"
+  },
+  "notes": [
+    "Etapa 1 (parse): retorna Server-Sent Events (SSE). O front deve consumir com fetch + ReadableStream ou EventSource. Eventos: 'log', 'progress', 'done', 'error'. Conexão encerra após 'done' ou 'error'.",
+    "Etapa 1 — Content-Type da resposta: text/event-stream. NÃO é JSON direto.",
+    "Etapa 2 (resolve): faz chamadas ao TMDB com throttle configurável para evitar 429. Processar em lotes de até 50 itens por chamada.",
+    "Etapa 3 (import): upsert em batch no Supabase. Filmes são inseridos direto em 'movies'. Séries criam/reutilizam a série + temporada + episódio em cascata.",
+    "Detecção de tipo: URL com '/movie/' → movie. URL com '/series/' → series. Fallback: presença de SxxExx no nome → series.",
+    "Limpeza de nome: remove ano entre parênteses ex: (1990), qualificadores como LEG, DUB, 4K, HDR, DUBLADO, LEGENDADO, FULL HD, e qualquer conteúdo residual entre parênteses ou colchetes.",
+    "Detecção de ano: extrai o primeiro grupo (YYYY) com 4 dígitos entre 1900 e 2099 encontrado no nome original.",
+    "Categoria/subcategoria: group-title é dividido pelo separador ' | '. Primeiro segmento = categoria, segundo (se houver) = subcategoria.",
+    "Duplicatas no import: itens já existentes por tmdb_id são ignorados (upsert seguro). Para séries, o episódio tem sua streaming_url atualizada se já existir.",
+    "O campo 'status' no import se aplica a filmes novos e séries novas. Séries/filmes já existentes no banco não têm seu status alterado.",
+    "Lotes de import: recomendado máximo de 100 itens por chamada. Para listas grandes, chamar em sequência.",
+    "Novo fluxo background: o backend executa parse + resolve + import em job ass?ncrono filtrando por categoria/subcategoria.",
+    "Use polling em GET /import/background/:jobId para status/progresso e GET /import/background/:jobId/logs para logs incrementais por cursor."
+  ],
+  "schemas": {
+    "parsed_item": {
+      "line": "integer (número da linha #EXTINF no M3U, para rastreabilidade)",
+      "type": "movie | series",
+      "raw_name": "Dragon Ball Z: Bardock, O Pai de Goku (1990) (string original do tvg-name)",
+      "clean_name": "Dragon Ball Z: Bardock, O Pai de Goku (nome sem ano, qualificadores e parênteses)",
+      "year": "1990 | null",
+      "season_number": "1 | null (presente apenas em series)",
+      "episode_number": "1 | null (presente apenas em series)",
+      "streaming_url": "http://conectdg26.me:80/movie/62937370/93267508/3894683.mp4",
+      "category": "COLETÂNEA DRAGON BALL Z",
+      "subcategory": "null | string (segundo segmento após ' | ' no group-title)"
+    },
+    "resolved_item": {
+      "line": "integer",
+      "type": "movie | series",
+      "clean_name": "Dragon Ball Z: Bardock, O Pai de Goku",
+      "year": "1990 | null",
+      "season_number": "1 | null",
+      "episode_number": "1 | null",
+      "streaming_url": "http://...",
+      "category": "string",
+      "subcategory": "string | null",
+      "tmdb_id": "12345 | null (null se not_found)",
+      "tmdb_title": "Dragon Ball Z: Bardock - The Father of Goku | null",
+      "tmdb_year": "1990 | null",
+      "tmdb_poster_url": "https://image.tmdb.org/t/p/w342/... | null",
+      "confidence": "high | low | not_found",
+      "confidence_notes": "exact year match | year mismatch (TMDB: 1991) | multiple candidates | não encontrado no TMDB"
+    },
+    "import_movie_item": {
+      "type": "movie",
+      "tmdb_id": "integer (obrigatório)",
+      "streaming_url": "http://... (obrigatório)",
+      "status": "draft | published (default: draft)",
+      "language": "pt-BR (default: pt-BR)"
+    },
+    "import_series_item": {
+      "type": "series",
+      "tmdb_id": "integer (tmdb_id da série, obrigatório)",
+      "season_number": "integer (obrigatório)",
+      "episode_number": "integer (obrigatório)",
+      "streaming_url": "http://... (obrigatório)",
+      "status": "draft | published (default: draft, aplicado somente se a série for criada agora)",
+      "language": "pt-BR (default: pt-BR)"
+    },
+    "import_result_item": {
+      "line": "integer | null",
+      "type": "movie | series",
+      "tmdb_id": "integer",
+      "action": "created | updated_url | skipped | failed",
+      "reason": "null | already_exists | tmdb_fetch_error | validation_error | string descritivo",
+      "internal_id": "uuid | null (id do filme ou episódio no banco)"
+    },
+    "parse_stats": {
+      "total": "integer (total de entradas #EXTINF válidas encontradas)",
+      "movies": "integer",
+      "series": "integer",
+      "skipped_lines": "integer (linhas malformadas, sem URL ou sem #EXTINF)"
+    },
+    "background_start_request": {
+      "content": "string M3U completo | opcional se url informado",
+      "url": "string URL do M3U | opcional se content informado",
+      "category": "string (obrigatorio)",
+      "subcategory": "string (opcional)",
+      "status": "draft | published (default: draft)",
+      "language": "default pt-BR",
+      "tmdb_batch_size": "50-500 (default 200)",
+      "tmdb_concurrency": "1-40 (default 20)",
+      "import_concurrency": "1-20 (default 10)"
+    },
+    "background_status": {
+      "job_id": "uuid",
+      "status": "queued | running | completed | failed | cancelled",
+      "category": "string",
+      "subcategory": "string | null",
+      "progress": {
+        "parse_total": "integer",
+        "selected_total": "integer",
+        "resolved_total": "integer",
+        "imported_total": "integer"
+      },
+      "summary": {
+        "total": "integer",
+        "created": "integer",
+        "updated_url": "integer",
+        "skipped": "integer",
+        "failed": "integer",
+        "not_found": "integer"
+      },
+      "error": "string | null"
+    },
+    "background_logs_response": {
+      "logs": [
+        {
+          "ts": "ISO string",
+          "level": "info | error",
+          "message": "string"
+        }
+      ],
+      "next_cursor": "integer",
+      "has_more": "boolean"
+    }
+  },
+  "routes": [
+    {
+      "id": "parse_m3u",
+      "method": "POST",
+      "path": "/admin/contents/m3u/parse",
+      "description": "Etapa 1: parsing do M3U com progresso em tempo real via Server-Sent Events (SSE). Resposta tem Content-Type: text/event-stream. Emite eventos 'log' e 'progress' durante o processamento e 'done' com o resultado final. Nenhuma chamada ao TMDB é feita aqui.",
+      "response_type": "text/event-stream",
+      "request": {
+        "body_content": {
+          "content": "#EXTM3U\n#EXTINF:-1 tvg-name=\"Clube da Luta (1999)\" group-title=\"FILMES | DRAMA\",Clube da Luta (1999)\nhttp://host:80/movie/a/b/123.mp4",
+          "limit": 100,
+          "offset": 0
+        },
+        "body_url": {
+          "url": "http://provedor.example.com/get.php?username=user&password=pass&type=m3u_plus",
+          "limit": 100,
+          "offset": 0
+        },
+        "validations": {
+          "content": "string com o conteúdo M3U completo — obrigatório se 'url' não for informado",
+          "url": "URL válida para download do M3U — obrigatório se 'content' não for informado",
+          "limit": "integer 1–500, default 100",
+          "offset": "integer >= 0, default 0"
+        }
+      },
+      "sse_events": {
+        "log": {
+          "description": "Mensagem de texto para exibir no console/log do front. Emitido junto com cada 'progress'.",
+          "payload": {
+            "message": "2.000 itens processados — 1.300 filmes, 700 séries (1%) — 0.4s"
+          }
+        },
+        "items": {
+          "description": "Array com o próximo lote de 2.000 itens parseados. O front deve concatenar com os lotes anteriores. Emitido junto com 'progress'.",
+          "payload": [
+            {
+              "line": 2,
+              "type": "movie",
+              "raw_name": "Clube da Luta (1999)",
+              "clean_name": "Clube da Luta",
+              "year": 1999,
+              "season_number": null,
+              "episode_number": null,
+              "streaming_url": "http://host:80/movie/a/b/123.mp4",
+              "category": "FILMES",
+              "subcategory": "DRAMA"
+            }
+          ]
+        },
+        "progress": {
+          "description": "Emitido a cada 2.000 itens parseados, sempre junto com 'items' e 'log'.",
+          "payload": {
+            "parsed": 2000,
+            "movies": 1300,
+            "series": 700,
+            "percent": 1,
+            "elapsed_ms": 380
+          }
+        },
+        "done": {
+          "description": "Último evento. Contém apenas as stats finais — todos os itens já foram entregues via 'items'. Conexão encerra após este evento.",
+          "payload": {
+            "total": 210453,
+            "movies": 134201,
+            "series": 76100,
+            "skipped_lines": 0
+          }
+        },
+        "error": {
+          "description": "Emitido se o parsing falhar (ex: URL inacessível). Conexão encerra após este evento.",
+          "payload": {
+            "message": "Falha ao baixar M3U: HTTP 403"
+          }
+        }
+      },
+      "frontend_example": {
+        "note": "Use fetch com ReadableStream — EventSource não suporta POST com body. Acumule os batches do evento 'items' até receber 'done'.",
+        "code": "const allItems = []; const res = await fetch('/admin/contents/m3u/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer TOKEN' }, body: JSON.stringify({ content: m3uText }) }); const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buf += decoder.decode(value, { stream: true }); const parts = buf.split('\\n\\n'); buf = parts.pop() ?? ''; for (const part of parts) { const evM = part.match(/^event: (\\w+)/m); const dataM = part.match(/^data: (.+)/ms); if (!evM || !dataM) continue; const event = evM[1]; const data = JSON.parse(dataM[1]); if (event === 'items') allItems.push(...data); else if (event === 'progress') updateProgressBar(data); else if (event === 'log') console.log(data.message); else if (event === 'done') setStats(data); else if (event === 'error') showError(data.message); } }"
+      },
+      "responses": {
+        "400": {
+          "error": "Forneça 'content' ou 'url'"
+        },
+        "401": {
+          "error": "Unauthorized"
+        },
+        "403": {
+          "error": "Forbidden"
+        }
+      }
+    },
+    {
+      "id": "resolve_tmdb",
+      "method": "POST",
+      "path": "/admin/contents/m3u/resolve",
+      "description": "Etapa 2: recebe um lote de parsed_items e resolve o tmdb_id de cada um buscando no TMDB por nome + ano. Aplica throttle entre as chamadas para respeitar o rate limit (máximo 40 req/s na API TMDB). Retornar máximo 50 itens por chamada — para lotes maiores, chamar em sequência. Cada item recebe confidence: high (nome exato + ano bate), low (nome bate mas ano diverge ou múltiplos candidatos), not_found.",
+      "request": {
+        "body": {
+          "items": [
+            {
+              "line": 2,
+              "type": "movie",
+              "clean_name": "Clube da Luta",
+              "year": 1999,
+              "season_number": null,
+              "episode_number": null,
+              "streaming_url": "http://host:80/movie/a/b/123.mp4",
+              "category": "FILMES",
+              "subcategory": "DRAMA"
+            },
+            {
+              "line": 4,
+              "type": "series",
+              "clean_name": "Breaking Bad",
+              "year": 2008,
+              "season_number": 1,
+              "episode_number": 1,
+              "streaming_url": "http://host:80/series/a/b/456.mp4",
+              "category": "SERIES",
+              "subcategory": "DRAMA"
+            }
+          ],
+          "language": "pt-BR",
+          "throttle_ms": 100
+        },
+        "validations": {
+          "items": "array de parsed_item, mínimo 1, máximo 50",
+          "language": "opcional, default pt-BR",
+          "throttle_ms": "opcional, delay entre chamadas TMDB em ms (50–500), default 100"
+        }
+      },
+      "responses": {
+        "200": {
+          "resolved": [
+            {
+              "line": 2,
+              "type": "movie",
+              "clean_name": "Clube da Luta",
+              "year": 1999,
+              "season_number": null,
+              "episode_number": null,
+              "streaming_url": "http://host:80/movie/a/b/123.mp4",
+              "category": "FILMES",
+              "subcategory": "DRAMA",
+              "tmdb_id": 550,
+              "tmdb_title": "Fight Club",
+              "tmdb_year": 1999,
+              "tmdb_poster_url": "https://image.tmdb.org/t/p/w342/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+              "confidence": "high",
+              "confidence_notes": null
+            },
+            {
+              "line": 4,
+              "type": "series",
+              "clean_name": "Breaking Bad",
+              "year": 2008,
+              "season_number": 1,
+              "episode_number": 1,
+              "streaming_url": "http://host:80/series/a/b/456.mp4",
+              "category": "SERIES",
+              "subcategory": "DRAMA",
+              "tmdb_id": 1396,
+              "tmdb_title": "Breaking Bad",
+              "tmdb_year": 2008,
+              "tmdb_poster_url": "https://image.tmdb.org/t/p/w342/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
+              "confidence": "high",
+              "confidence_notes": null
+            }
+          ],
+          "summary": {
+            "total": 2,
+            "high": 1,
+            "low": 0,
+            "not_found": 1
+          }
+        },
+        "400": {
+          "error": "Validation error"
+        },
+        "401": {
+          "error": "Unauthorized"
+        },
+        "403": {
+          "error": "Forbidden"
+        }
+      }
+    },
+    {
+      "id": "import_batch",
+      "method": "POST",
+      "path": "/admin/contents/m3u/import",
+      "description": "Etapa 3: recebe os itens confirmados pelo admin (já com tmdb_id) e realiza o upsert em batch no Supabase. Filmes: upsert em 'movies' com streaming_url. Séries: garante que série + temporada existam (cria via TMDB se necessário) e faz upsert do episódio com streaming_url. Itens duplicados (tmdb_id já existente) têm apenas streaming_url atualizada se for diferente. Máximo 100 itens por chamada.",
+      "request": {
+        "body": {
+          "items": [
+            {
+              "type": "movie",
+              "tmdb_id": 550,
+              "streaming_url": "http://host:80/movie/a/b/123.mp4",
+              "status": "draft",
+              "language": "pt-BR"
+            },
+            {
+              "type": "series",
+              "tmdb_id": 1396,
+              "season_number": 1,
+              "episode_number": 1,
+              "streaming_url": "http://host:80/series/a/b/456.mp4",
+              "status": "draft",
+              "language": "pt-BR"
+            }
+          ],
+          "line_ref": [
+            2,
+            4
+          ]
+        },
+        "validations": {
+          "items": "array de import_movie_item | import_series_item, mínimo 1, máximo 100",
+          "line_ref": "opcional, array de integers paralelo a items para rastrear linha de origem no M3U",
+          "type": "obrigatório em cada item: movie | series",
+          "tmdb_id": "obrigatório, inteiro positivo",
+          "streaming_url": "obrigatório, URL válida",
+          "season_number": "obrigatório quando type=series",
+          "episode_number": "obrigatório quando type=series",
+          "status": "opcional, draft | published, default draft (aplicado somente a conteúdo novo)",
+          "language": "opcional, default pt-BR"
+        }
+      },
+      "responses": {
+        "200": {
+          "summary": {
+            "total": 2,
+            "created": 1,
+            "updated_url": 1,
+            "skipped": 0,
+            "failed": 0
+          },
+          "results": [
+            {
+              "line": 2,
+              "type": "movie",
+              "tmdb_id": 550,
+              "action": "created",
+              "reason": null,
+              "internal_id": "m1b2c3d4-0000-0000-0000-000000000099"
+            },
+            {
+              "line": 4,
+              "type": "series",
+              "tmdb_id": 1396,
+              "action": "updated_url",
+              "reason": null,
+              "internal_id": "ep1b2c3d4-0000-0000-0000-000000000099"
+            }
+          ]
+        },
+        "207": {
+          "_note": "Retornado quando parte dos itens falhou. summary.failed > 0.",
+          "summary": {
+            "total": 3,
+            "created": 1,
+            "updated_url": 1,
+            "skipped": 0,
+            "failed": 1
+          },
+          "results": [
+            {
+              "line": 2,
+              "type": "movie",
+              "tmdb_id": 550,
+              "action": "created",
+              "reason": null,
+              "internal_id": "m1b2c3d4-0000-0000-0000-000000000099"
+            },
+            {
+              "line": 6,
+              "type": "series",
+              "tmdb_id": 99999,
+              "action": "failed",
+              "reason": "tmdb_fetch_error: série não encontrada no TMDB",
+              "internal_id": null
+            }
+          ]
+        },
+        "400": {
+          "error": "Validation error"
+        },
+        "401": {
+          "error": "Unauthorized"
+        },
+        "403": {
+          "error": "Forbidden"
+        }
+      }
+    },
+    {
+      "id": "start_import_background",
+      "method": "POST",
+      "path": "/admin/contents/m3u/import/background/start",
+      "description": "Inicia job ass?ncrono de importa??o em massa no backend. O backend faz parse, filtra por categoria/subcategoria, resolve TMDB em lotes maiores e importa no Supabase em background.",
+      "request": {
+        "body": {
+          "category": "FILMES",
+          "subcategory": "DRAMA",
+          "url": "http://provedor.example.com/get.php?...",
+          "status": "draft"
+        }
+      },
+      "responses": {
+        "202": {
+          "job_id": "uuid",
+          "status": "queued"
+        },
+        "400": {
+          "error": "Validation error"
+        },
+        "401": {
+          "error": "Unauthorized"
+        },
+        "403": {
+          "error": "Forbidden"
+        }
+      }
+    },
+    {
+      "id": "get_import_background_status",
+      "method": "GET",
+      "path": "/admin/contents/m3u/import/background/:jobId",
+      "description": "Retorna status, progresso e resumo parcial/final do job de background.",
+      "responses": {
+        "200": {
+          "job_id": "uuid",
+          "status": "running",
+          "progress": {
+            "parse_total": 100000,
+            "selected_total": 5000,
+            "resolved_total": 3000,
+            "imported_total": 2800
+          },
+          "summary": {
+            "total": 2800,
+            "created": 1200,
+            "updated_url": 900,
+            "skipped": 650,
+            "failed": 50,
+            "not_found": 200
+          },
+          "error": null
+        },
+        "404": {
+          "error": "Job nao encontrado"
+        }
+      }
+    },
+    {
+      "id": "get_import_background_logs",
+      "method": "GET",
+      "path": "/admin/contents/m3u/import/background/:jobId/logs?cursor=0&limit=100",
+      "description": "Retorna logs incrementais do job para polling no frontend.",
+      "responses": {
+        "200": {
+          "logs": [
+            {
+              "ts": "2026-05-10T12:00:00.000Z",
+              "level": "info",
+              "message": "Resolve TMDB: 200/5000"
+            }
+          ],
+          "next_cursor": 1,
+          "has_more": false
+        },
+        "404": {
+          "error": "Job nao encontrado"
+        }
+      }
+    },
+    {
+      "id": "cancel_import_background",
+      "method": "POST",
+      "path": "/admin/contents/m3u/import/background/:jobId/cancel",
+      "description": "Solicita cancelamento do job em execu??o.",
+      "responses": {
+        "200": {
+          "cancelled": true,
+          "job_id": "uuid"
+        },
+        "404": {
+          "error": "Job nao encontrado"
+        }
+      }
+    }
+  ],
+  "frontend_background_polling": {
+    "objective": "Acompanhar o job em background sem SSE usando polling de status e logs incrementais por cursor.",
+    "recommended_intervals": {
+      "status_ms": 2000,
+      "logs_ms": 1500,
+      "backoff_on_error_ms": 5000
+    },
+    "lifecycle": [
+      "1) POST /import/background/start e guardar job_id.",
+      "2) Iniciar dois loops: status e logs (com cursor).",
+      "3) Encerrar polling quando status for completed, failed ou cancelled.",
+      "4) Exibir summary final e, se houver, error."
+    ],
+    "status_endpoint_contract": {
+      "endpoint": "GET /admin/contents/m3u/import/background/:jobId",
+      "final_status": [
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "progress_fields": [
+        "parse_total",
+        "selected_total",
+        "resolved_total",
+        "imported_total"
+      ]
+    },
+    "logs_endpoint_contract": {
+      "endpoint": "GET /admin/contents/m3u/import/background/:jobId/logs?cursor=<n>&limit=<n>",
+      "cursor_rule": "Enviar sempre o next_cursor retornado na chamada anterior.",
+      "pagination": "Se has_more=true, buscar novamente imediatamente; se false, aguardar intervalo normal."
+    },
+    "frontend_example": {
+      "language": "typescript",
+      "code": "const start = await fetch('/admin/contents/m3u/import/background/start', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }).then(r => r.json()); const jobId = start.job_id; let cursor = 0; let finished = false; async function pollStatus(){ if(finished) return; try { const s = await fetch(`/admin/contents/m3u/import/background/${jobId}`, { headers: { Authorization: `Bearer ${token}` }}).then(r=>r.json()); renderProgress(s.progress); renderSummary(s.summary); if(['completed','failed','cancelled'].includes(s.status)){ finished = true; if(s.error) showError(s.error); return; } setTimeout(pollStatus, 2000); } catch { setTimeout(pollStatus, 5000); } } async function pollLogs(){ if(finished) return; try { const l = await fetch(`/admin/contents/m3u/import/background/${jobId}/logs?cursor=${cursor}&limit=200`, { headers: { Authorization: `Bearer ${token}` }}).then(r=>r.json()); appendLogs(l.logs); cursor = l.next_cursor; setTimeout(pollLogs, l.has_more ? 0 : 1500); } catch { setTimeout(pollLogs, 5000); } } pollStatus(); pollLogs();"
+    }
+  }
+}
