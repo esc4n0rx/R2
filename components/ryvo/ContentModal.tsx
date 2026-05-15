@@ -287,6 +287,7 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
   const [volume, setVolume] = useState(1)
   const [isMuted, setIsMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showPlayerControls, setShowPlayerControls] = useState(true)
   const [streamTarget, setStreamTarget] = useState<{
     contentType: StreamContentType
     contentId: string
@@ -294,6 +295,29 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
   const lastProgressSyncRef = useRef(0)
   const playerShellRef = useRef<HTMLDivElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+
+  const controlsHideTimeoutRef = useRef<number | null>(null)
+
+  const clearControlsHideTimeout = useCallback(() => {
+    if (controlsHideTimeoutRef.current !== null) {
+      window.clearTimeout(controlsHideTimeoutRef.current)
+      controlsHideTimeoutRef.current = null
+    }
+  }, [])
+
+  const scheduleControlsHide = useCallback(() => {
+    clearControlsHideTimeout()
+    controlsHideTimeoutRef.current = window.setTimeout(() => {
+      const video = videoRef.current
+      if (!video || video.paused) return
+      setShowPlayerControls(false)
+    }, 2500)
+  }, [clearControlsHideTimeout])
+
+  const revealControls = useCallback(() => {
+    setShowPlayerControls(true)
+    scheduleControlsHide()
+  }, [scheduleControlsHide])
 
   // Suppress warnings about watchlistItems not being used directly
   void watchlistItems
@@ -370,6 +394,7 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
       setCurrentTime(0)
       setDuration(0)
       setStreamTarget(null)
+      setShowPlayerControls(true)
     }
   }, [item])
 
@@ -473,10 +498,22 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
   useEffect(() => {
     const onFullscreenChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement))
+      revealControls()
     }
     document.addEventListener('fullscreenchange', onFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [])
+
+
+  useEffect(() => {
+    if (!isPlayerOpen) {
+      clearControlsHideTimeout()
+      setShowPlayerControls(true)
+      return
+    }
+    revealControls()
+    return () => clearControlsHideTimeout()
+  }, [isPlayerOpen, clearControlsHideTimeout, revealControls])
 
   const saveStreamState = useCallback(
     async (eventType: 'pause' | 'seek' | 'stop' | 'complete', currentTime: number, duration: number) => {
@@ -618,7 +655,11 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="fixed inset-0 z-[80] bg-black"
+              className={`fixed inset-0 z-[80] bg-black ${showPlayerControls ? 'cursor-default' : 'cursor-none'}`}
+              onMouseMove={revealControls}
+              onMouseEnter={revealControls}
+              onTouchStart={revealControls}
+              onClick={revealControls}
             >
               {isPlayerLoading && (
                 <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70">
@@ -643,8 +684,15 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
                   setIsMuted(video.muted)
                 }}
                 onCanPlay={() => setIsPlayerLoading(false)}
-                onPlay={() => setIsPaused(false)}
-                onPause={() => setIsPaused(true)}
+                onPlay={() => {
+                  setIsPaused(false)
+                  scheduleControlsHide()
+                }}
+                onPause={() => {
+                  setIsPaused(true)
+                  clearControlsHideTimeout()
+                  setShowPlayerControls(true)
+                }}
                 onTimeUpdate={(e) => {
                   const now = Date.now()
                   setCurrentTime(e.currentTarget.currentTime || 0)
@@ -665,7 +713,9 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
 
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-transparent to-black/80" />
 
-              <div className="absolute top-0 left-0 right-0 z-30 p-4 md:p-6 flex items-start justify-between">
+              <div
+                className={`absolute top-0 left-0 right-0 z-30 p-4 md:p-6 flex items-start justify-between transition-opacity duration-300 ${showPlayerControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+              >
                 <div>
                   <p className="text-white/70 text-xs uppercase tracking-wider" style={{ fontFamily: 'var(--font-inter)' }}>
                     {item.type === 'movie' ? 'Filme' : 'Série'}
@@ -689,7 +739,9 @@ export default function ContentModal({ item, profileId, onClose, onItemClick, on
                 </button>
               </div>
 
-              <div className="absolute bottom-0 left-0 right-0 z-30 p-4 md:p-6">
+              <div
+                className={`absolute bottom-0 left-0 right-0 z-30 p-4 md:p-6 transition-opacity duration-300 ${showPlayerControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+              >
                 <div className="mb-3">
                   <input
                     type="range"
