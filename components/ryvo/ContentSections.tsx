@@ -19,8 +19,20 @@ function isKidsAllowed(item: ContentCard) {
   return KIDS_ALLOWED_RATINGS.has(normalizeRating(item.rating))
 }
 
+function toNormalizedGenreValue(genre: unknown): string | null {
+  if (typeof genre === 'string') return genre.toLowerCase()
+  if (genre && typeof genre === 'object' && 'name' in (genre as Record<string, unknown>)) {
+    const value = (genre as { name?: unknown }).name
+    return typeof value === 'string' ? value.toLowerCase() : null
+  }
+  return null
+}
+
 function matchesAnyGenre(item: ContentCard, genres: string[]) {
-  const normalized = item.genres.map((g) => g.toLowerCase())
+  const normalized = (item.genres ?? [])
+    .map((g) => toNormalizedGenreValue(g))
+    .filter((g): g is string => Boolean(g))
+
   return genres.some((g) => normalized.includes(g.toLowerCase()))
 }
 
