@@ -24,6 +24,7 @@ import {
   ContinueWatchingSection,
   NewReleasesSection,
   RecommendedSection,
+  DynamicGenreSections,
 } from '@/components/ryvo/ContentSections'
 import { useWatchProgress, useWatchHistory } from '@/hooks/use-stream'
 import { useTheme } from '@/lib/theme-context'
@@ -65,6 +66,7 @@ export default function RyvoApp() {
   >([])
   const [continueWatchingLoading, setContinueWatchingLoading] = useState(false)
   const [historyCards, setHistoryCards] = useState<Array<{ event: WatchHistoryEvent; card: ContentCard }>>([])
+  const [newReleaseItems, setNewReleaseItems] = useState<ContentCard[]>([])
   const [historyCardsLoading, setHistoryCardsLoading] = useState(false)
 
   const { progress, reload: reloadProgress } = useWatchProgress(activeProfile?.id ?? null)
@@ -110,23 +112,24 @@ export default function RyvoApp() {
   }, [watchlistItems])
 
   const loadContinueWatchingCards = useCallback(async () => {
-    const movieProgress = progress.filter((p) => p.content_type === 'movie' && !p.completed)
-    if (movieProgress.length === 0) {
+    const targetType = contentType
+    const filteredProgress = progress.filter((p) => p.content_type === targetType && !p.completed)
+    if (filteredProgress.length === 0) {
       setContinueWatchingCards([])
       return
     }
     setContinueWatchingLoading(true)
     try {
       const results = await Promise.allSettled(
-        movieProgress.map(async (entry) => {
-          const r = await catalogApi.getDetails('movie', entry.content_id)
+        filteredProgress.map(async (entry) => {
+          const r = await catalogApi.getDetails(targetType, entry.content_id)
           const d = r.details
           const duration = entry.duration_seconds ?? (d.type === 'movie' ? ((d.runtime_minutes ?? 0) * 60) : 0)
           const remaining = Math.max(0, duration - entry.position_seconds)
           const card: ContentCard = {
             id: d.id,
             type: 'movie',
-            title: d.type === 'movie' ? d.title : '',
+            title: d.type === 'movie' ? d.title : d.name,
             overview: d.overview,
             poster_url: d.poster_url ?? null,
             backdrop_url: d.backdrop_url ?? null,
@@ -150,7 +153,7 @@ export default function RyvoApp() {
     } finally {
       setContinueWatchingLoading(false)
     }
-  }, [progress])
+  }, [contentType, progress])
 
   const loadHistoryCards = useCallback(async () => {
     const filtered = historyEvents.filter((e) => e.content_type === 'movie')
@@ -168,7 +171,7 @@ export default function RyvoApp() {
           const card: ContentCard = {
             id: d.id,
             type: 'movie',
-            title: d.type === 'movie' ? d.title : '',
+            title: d.type === 'movie' ? d.title : d.name,
             overview: d.overview,
             poster_url: d.poster_url ?? null,
             backdrop_url: d.backdrop_url ?? null,
@@ -355,11 +358,19 @@ export default function RyvoApp() {
                     />
                     <NewReleasesSection
                       contentType={contentType}
+                      isKidsProfile={activeProfile.is_kids}
+                      onItemsLoaded={setNewReleaseItems}
+                      onItemClick={setModalItem}
+                    />
+                    <DynamicGenreSections
+                      contentType={contentType}
+                      items={newReleaseItems}
                       onItemClick={setModalItem}
                     />
                     <RecommendedSection
                       contentType={contentType}
                       profileId={activeProfile.id}
+                      isKidsProfile={activeProfile.is_kids}
                       onItemClick={setModalItem}
                     />
 
