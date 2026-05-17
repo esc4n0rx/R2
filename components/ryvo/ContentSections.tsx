@@ -1,11 +1,40 @@
 'use client'
 
-import { useRef } from 'react'
 import { motion } from 'framer-motion'
 import { Play, ChevronRight, ChevronLeft, Loader2, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useNewReleases, useRecommended } from '@/hooks/use-catalog'
 import { type WatchProgress } from '@/lib/api/stream'
 import type { ContentCard } from '@/lib/api/catalog'
+
+
+
+const KIDS_ALLOWED_RATINGS = new Set(['L', 'G', 'TV-Y', 'TV-G'])
+
+function normalizeRating(rating?: string | null) {
+  return (rating ?? '').trim().toUpperCase()
+}
+
+function isKidsAllowed(item: ContentCard) {
+  return KIDS_ALLOWED_RATINGS.has(normalizeRating(item.rating))
+}
+
+function toNormalizedGenreValue(genre: unknown): string | null {
+  if (typeof genre === 'string') return genre.toLowerCase()
+  if (genre && typeof genre === 'object' && 'name' in (genre as Record<string, unknown>)) {
+    const value = (genre as { name?: unknown }).name
+    return typeof value === 'string' ? value.toLowerCase() : null
+  }
+  return null
+}
+
+function matchesAnyGenre(item: ContentCard, genres: string[]) {
+  const normalized = (item.genres ?? [])
+    .map((g) => toNormalizedGenreValue(g))
+    .filter((g): g is string => Boolean(g))
+
+  return genres.some((g) => normalized.includes(g.toLowerCase()))
+}
 
 /* =============================================
    CONTENT CARD (API)
@@ -392,9 +421,13 @@ export function ContinueWatchingSection({
 export function NewReleasesSection({
   contentType,
   onItemClick,
+  isKidsProfile = false,
+  onItemsLoaded,
 }: {
   contentType: 'movie' | 'series'
   onItemClick: (item: ContentCard) => void
+  isKidsProfile?: boolean
+  onItemsLoaded?: (items: ContentCard[]) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const { data, isLoading, error } = useNewReleases(contentType)
@@ -405,7 +438,12 @@ export function NewReleasesSection({
     }
   }
 
-  const items = data?.items ?? []
+  const rawItems = data?.items ?? []
+  const items = useMemo(() => (isKidsProfile ? rawItems.filter(isKidsAllowed) : rawItems), [isKidsProfile, rawItems])
+
+  useEffect(() => {
+    onItemsLoaded?.(items)
+  }, [items, onItemsLoaded])
 
   return (
     <section
@@ -463,10 +501,12 @@ export function RecommendedSection({
   contentType,
   profileId,
   onItemClick,
+  isKidsProfile = false,
 }: {
   contentType: 'movie' | 'series'
   profileId: string | null
   onItemClick: (item: ContentCard) => void
+  isKidsProfile?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const { data, isLoading, error } = useRecommended(profileId, contentType)
@@ -477,7 +517,8 @@ export function RecommendedSection({
     }
   }
 
-  const items = data?.items ?? []
+  const rawItems = data?.items ?? []
+  const items = useMemo(() => (isKidsProfile ? rawItems.filter(isKidsAllowed) : rawItems), [isKidsProfile, rawItems])
 
   return (
     <section className="py-10">
@@ -530,5 +571,53 @@ export function RecommendedSection({
         )}
       </div>
     </section>
+  )
+}
+
+
+export function DynamicGenreSections({
+  contentType,
+  items,
+  onItemClick,
+}: {
+  contentType: 'movie' | 'series'
+  items: ContentCard[]
+  onItemClick: (item: ContentCard) => void
+}) {
+  const sectionDefs = contentType === 'series'
+    ? [
+        { title: 'Maratona no streaming', genres: ['netflix', 'prime video', 'amazon'] },
+        { title: 'Universo Anime', genres: ['animação', 'animacao', 'anime'] },
+        { title: 'Para arrepiar', genres: ['terror', 'thriller', 'suspense'] },
+      ]
+    : [
+        { title: 'Noite em família', genres: ['comédia', 'comedia', 'animação', 'animacao', 'família', 'familia'] },
+        { title: 'Dose de adrenalina', genres: ['ação', 'acao', 'suspense', 'aventura'] },
+        { title: 'Para ficar com medo', genres: ['terror', 'thriller'] },
+      ]
+
+  return (
+    <>
+      {sectionDefs.map((section) => {
+        const sectionItems = items.filter((item) => matchesAnyGenre(item, section.genres)).slice(0, 12)
+        if (sectionItems.length === 0) return null
+        return (
+          <section key={section.title} className="py-10 border-b transition-colors duration-300" style={{ borderBottomColor: 'var(--muted)' }}>
+            <div className="px-6 md:px-12 lg:px-16">
+              <div className="mb-5">
+                <h2 className="text-xl md:text-2xl font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-inter)' }}>{section.title}</h2>
+              </div>
+              <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
+                {sectionItems.map((item, i) => (
+                  <div key={`${section.title}-${item.id}`} className="flex-none w-[140px] md:w-[160px] lg:w-[180px]">
+                    <ApiContentCard item={item} onClick={onItemClick} index={i} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )
+      })}
+    </>
   )
 }
